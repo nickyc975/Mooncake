@@ -75,9 +75,6 @@ class WrappedMasterService {
     tl::expected<void, ErrorCode> MountSegment(const Segment& segment,
                                                const UUID& client_id);
 
-    tl::expected<void, ErrorCode> ReMountSegment(
-        const std::vector<Segment>& segments, const UUID& client_id);
-
     tl::expected<void, ErrorCode> UnmountSegment(const UUID& segment_id,
                                                  const UUID& client_id);
 
@@ -85,9 +82,11 @@ class WrappedMasterService {
 
     tl::expected<GetStorageConfigResponse, ErrorCode> GetStorageConfig();
 
-    tl::expected<PingResponse, ErrorCode> Ping(const UUID& client_id);
+    tl::expected<ClusterConfig, ErrorCode> RegisterClient(
+        const UUID& client_id, const std::string& version,
+        const std::vector<Segment>& segments = std::vector<Segment>());
 
-    tl::expected<std::string, ErrorCode> ServiceReady();
+    tl::expected<PingResponse, ErrorCode> Ping(const UUID& client_id);
 
    private:
     MasterService master_service_;

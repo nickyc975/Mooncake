@@ -41,12 +41,15 @@ class MasterClient {
     MasterClient& operator=(const MasterClient&) = delete;
 
     /**
-     * @brief Connects to the master service
+     * @brief Register a client to the master service
      * @param master_addr Master service address (IP:Port)
-     * @return ErrorCode indicating success/failure
+     * @param segments Segments need to be mounted
+     * @return Cluster configuration on success, or ErrorCode indicating failure
+     * reason
      */
-    [[nodiscard]] ErrorCode Connect(
-        const std::string& master_addr = kDefaultMasterAddress);
+    [[nodiscard]] tl::expected<ClusterConfig, ErrorCode> Register(
+        const std::string& master_addr = kDefaultMasterAddress,
+        const std::vector<Segment>& segments = std::vector<Segment>());
 
     /**
      * @brief Checks if an object exists
@@ -193,17 +196,6 @@ class MasterClient {
      */
     [[nodiscard]] tl::expected<void, ErrorCode> MountSegment(
         const Segment& segment);
-
-    /**
-     * @brief Re-mount segments, invoked when the client is the first time to
-     * connect to the master or the client Ping TTL is expired and need
-     * to remount. This function is idempotent. Client should retry if the
-     * return code is not ErrorCode::OK.
-     * @param segments Segments to remount
-     * @return tl::expected<void, ErrorCode> indicating success/failure
-     */
-    [[nodiscard]] tl::expected<void, ErrorCode> ReMountSegment(
-        const std::vector<Segment>& segments);
 
     /**
      * @brief Unregisters a memory segment from master

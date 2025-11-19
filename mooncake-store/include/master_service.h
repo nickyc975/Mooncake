@@ -25,6 +25,7 @@
 #include "master_config.h"
 #include "rpc_types.h"
 #include "replica.h"
+#include "version.h"
 
 namespace mooncake {
 // Forward declarations
@@ -55,20 +56,6 @@ class MasterService {
      */
     auto MountSegment(const Segment& segment, const UUID& client_id)
         -> tl::expected<void, ErrorCode>;
-
-    /**
-     * @brief Re-mount segments, invoked when the client is the first time to
-     * connect to the master or the client Ping TTL is expired and need
-     * to remount. This function is idempotent. Client should retry if the
-     * return code is not ErrorCode::OK.
-     * @return ErrorCode::OK means either all segments are remounted
-     * successfully or the fail is not solvable by a new remount request.
-     *         ErrorCode::UNAVAILABLE_IN_CURRENT_STATUS if the segment cannot
-     *         be mounted temporarily.
-     *         ErrorCode::INTERNAL_ERROR if something temporary error happens.
-     */
-    auto ReMountSegment(const std::vector<Segment>& segments,
-                        const UUID& client_id) -> tl::expected<void, ErrorCode>;
 
     /**
      * @brief Unmount a memory segment. This function is idempotent.
@@ -203,6 +190,18 @@ class MasterService {
      * @return The count of keys
      */
     size_t GetKeyCount() const;
+
+    /**
+     * @brief Register a client.
+     * @param client_id The uuid of the client.
+     * @param version version of the client
+     * @param segments Segments to mount.
+     * @return Cluster configuration on success, ErrorCode::INVALID_PARAMS on
+     * failure.
+     */
+    tl::expected<ClusterConfig, ErrorCode> RegisterClient(
+        const UUID& client_id, const std::string& version,
+        const std::vector<Segment>& segments = std::vector<Segment>());
 
     /**
      * @brief Heartbeat from client
@@ -516,24 +515,79 @@ class MasterService {
 
     ViewVersionId view_version_;
 
+    struct Client {
+        const UUID id;
+        mutable std::shared_mutex mutex;
+        std::chrono::steady_clock::time_point live_ttl_timeout;
+
+        Client(const UUID& id) : id(id) {
+            MasterMetricManager::instance().inc_active_clients();
+        }
+
+        ~Client() { MasterMetricManager::instance().dec_active_clients(); }
+
+        void keepAliveIn(const std::chrono::seconds duration) {
+            auto timeout = std::chrono::steady_clock::now() + duration;
+            std::unique_lock<std::shared_mutex> lock(mutex);
+            if (timeout > live_ttl_timeout) {
+                live_ttl_timeout = timeout;
+            }
+        }
+
+        bool isAlive() { return isAliveUtil(std::chrono::steady_clock::now()); }
+
+        bool isAliveUtil(const std::chrono::steady_clock::time_point& timeout) {
+            std::shared_lock<std::shared_mutex> lock(mutex);
+            return live_ttl_timeout > timeout;
+        }
+    };
+
+    static const size_t kNumClientShards = 128;
+    static size_t getClientShardIdx(const UUID& client_id) {
+        return boost::hash<UUID>{}(client_id) % kNumClientShards;
+    }
+
+    struct ClientShard {
+        mutable std::mutex mutex;
+        std::unordered_map<UUID, std::shared_ptr<Client>, boost::hash<UUID>>
+            clients;
+    };
+
+    struct ClientAccessor {
+        ClientAccessor(std::span<ClientShard> shards, const UUID& client_id)
+            : shard_(shards[getClientShardIdx(client_id)]),
+              client_id_(client_id),
+              guard_(shard_.mutex),
+              it_(shard_.clients.find(client_id)) {}
+
+        bool Exists() const { return it_ != shard_.clients.end(); }
+
+        std::shared_ptr<Client> Get() const {
+            return Exists() ? it_->second : nullptr;
+        }
+
+        void Set(const std::shared_ptr<Client>& client) {
+            shard_.clients[client_id_] = client;
+            it_ = shard_.clients.find(client_id_);
+        }
+
+       private:
+        ClientShard& shard_;
+        UUID client_id_;
+        std::lock_guard<std::mutex> guard_;
+        std::unordered_map<UUID, std::shared_ptr<Client>,
+                           boost::hash<UUID>>::iterator it_;
+    };
+
     // Client related members
-    mutable std::shared_mutex client_mutex_;
-    std::unordered_set<UUID, boost::hash<UUID>>
-        ok_client_;  // client with ok status
+    const int64_t client_live_ttl_sec_;
+    std::array<ClientShard, kNumClientShards> client_shards_;
+
     void ClientMonitorFunc();
     std::thread client_monitor_thread_;
     std::atomic<bool> client_monitor_running_{false};
     static constexpr uint64_t kClientMonitorSleepMs =
         1000;  // 1000 ms sleep between client monitor checks
-    // boost lockfree queue requires trivial assignment operator
-    struct PodUUID {
-        uint64_t first;
-        uint64_t second;
-    };
-    static constexpr size_t kClientPingQueueSize =
-        128 * 1024;  // Size of the client ping queue
-    boost::lockfree::queue<PodUUID> client_ping_queue_{kClientPingQueueSize};
-    const int64_t client_live_ttl_sec_;
 
     // if high availability features enabled
     const bool enable_ha_;

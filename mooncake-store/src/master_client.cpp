@@ -102,13 +102,13 @@ struct RpcNameTraits<&WrappedMasterService::MountSegment> {
 };
 
 template <>
-struct RpcNameTraits<&WrappedMasterService::ReMountSegment> {
-    static constexpr const char* value = "ReMountSegment";
+struct RpcNameTraits<&WrappedMasterService::UnmountSegment> {
+    static constexpr const char* value = "UnmountSegment";
 };
 
 template <>
-struct RpcNameTraits<&WrappedMasterService::UnmountSegment> {
-    static constexpr const char* value = "UnmountSegment";
+struct RpcNameTraits<&WrappedMasterService::RegisterClient> {
+    static constexpr const char* value = "RegisterClient";
 };
 
 template <>
@@ -124,11 +124,6 @@ struct RpcNameTraits<&WrappedMasterService::GetFsdir> {
 template <>
 struct RpcNameTraits<&WrappedMasterService::GetStorageConfig> {
     static constexpr const char* value = "GetStorageConfig";
-};
-
-template <>
-struct RpcNameTraits<&WrappedMasterService::ServiceReady> {
-    static constexpr const char* value = "ServiceReady";
 };
 
 template <auto ServiceMethod, typename ReturnType, typename... Args>
@@ -220,9 +215,11 @@ std::vector<tl::expected<ResultType, ErrorCode>> MasterClient::invoke_batch_rpc(
 
 MasterClient::~MasterClient() = default;
 
-ErrorCode MasterClient::Connect(const std::string& master_addr) {
-    ScopedVLogTimer timer(1, "MasterClient::Connect");
-    timer.LogRequest("master_addr=", master_addr);
+tl::expected<ClusterConfig, ErrorCode> MasterClient::Register(
+    const std::string& master_addr, const std::vector<Segment>& segments) {
+    ScopedVLogTimer timer(1, "MasterClient::Register");
+    timer.LogRequest("client_id=", client_id_, ", master_addr=", master_addr,
+                     ", segment_num=", segments.size());
 
     MutexLocker lock(&connect_mutex_);
     if (client_addr_param_ != master_addr) {
@@ -233,25 +230,17 @@ ErrorCode MasterClient::Connect(const std::string& master_addr) {
         client_addr_param_ = master_addr;
     }
     auto pool = client_accessor_.GetClientPool();
-    // The client pool does not have native connection check method, so we need
-    // to use custom ServiceReady API.
+    // Register client to master. This can also check the availability of
+    // master.
     auto result =
-        invoke_rpc<&WrappedMasterService::ServiceReady, std::string>();
+        invoke_rpc<&WrappedMasterService::RegisterClient, ClusterConfig>(
+            client_id_, GetMooncakeStoreVersion(), segments);
     if (!result.has_value()) {
         timer.LogResponse("error_code=", result.error());
-        return result.error();
+    } else {
+        timer.LogResponse("cluster_config=", result.value());
     }
-    // Check if server version matches client version
-    std::string server_version = result.value();
-    std::string client_version = GetMooncakeStoreVersion();
-    if (server_version != client_version) {
-        LOG(ERROR) << "Version mismatch: server=" << server_version
-                   << " client=" << client_version;
-        timer.LogResponse("error_code=", ErrorCode::INVALID_VERSION);
-        return ErrorCode::INVALID_VERSION;
-    }
-    timer.LogResponse("error_code=", ErrorCode::OK);
-    return ErrorCode::OK;
+    return result;
 }
 
 tl::expected<bool, ErrorCode> MasterClient::ExistKey(
@@ -443,18 +432,6 @@ tl::expected<void, ErrorCode> MasterClient::MountSegment(
 
     auto result = invoke_rpc<&WrappedMasterService::MountSegment, void>(
         segment, client_id_);
-    timer.LogResponseExpected(result);
-    return result;
-}
-
-tl::expected<void, ErrorCode> MasterClient::ReMountSegment(
-    const std::vector<Segment>& segments) {
-    ScopedVLogTimer timer(1, "MasterClient::ReMountSegment");
-    timer.LogRequest("segments_num=", segments.size(),
-                     ", client_id=", client_id_);
-
-    auto result = invoke_rpc<&WrappedMasterService::ReMountSegment, void>(
-        segments, client_id_);
     timer.LogResponseExpected(result);
     return result;
 }

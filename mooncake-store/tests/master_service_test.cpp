@@ -48,6 +48,9 @@ class MasterServiceTest : public ::testing::Test {
         size_t size = kDefaultSegmentSize) const {
         Segment segment = MakeSegment(std::move(name), base, size);
         UUID client_id = generate_uuid();
+        auto reg_result =
+            service.RegisterClient(client_id, GetMooncakeStoreVersion());
+        EXPECT_TRUE(reg_result.has_value());
         auto mount_result = service.MountSegment(segment, client_id);
         EXPECT_TRUE(mount_result.has_value());
         return {.segment_id = segment.id, .client_id = client_id};
@@ -107,6 +110,30 @@ std::string GenerateKeyForSegment(const UUID& client_id,
     }
 }
 
+TEST_F(MasterServiceTest, TestRegisterClient) {
+    // Create a MasterService instance for testing.
+    const auto service_config = MasterServiceConfig::builder().build();
+    std::unique_ptr<MasterService> service_(new MasterService(service_config));
+    const auto segment = MakeSegment();
+    const auto client_id = generate_uuid();
+    const auto& master_version = GetMooncakeStoreVersion();
+
+    // Register client with invalid version
+    auto reg_result = service_->RegisterClient(client_id, "invalid_version");
+    EXPECT_FALSE(reg_result.has_value());
+    EXPECT_EQ(reg_result.error(), ErrorCode::INVALID_VERSION);
+
+    // Register client with segment
+    reg_result = service_->RegisterClient(client_id, master_version, {segment});
+    EXPECT_TRUE(reg_result.has_value());
+    EXPECT_EQ(reg_result.value().version, master_version);
+
+    // Register client again
+    reg_result = service_->RegisterClient(client_id, master_version, {segment});
+    EXPECT_TRUE(reg_result.has_value());
+    EXPECT_EQ(reg_result.value().version, master_version);
+}
+
 TEST_F(MasterServiceTest, MountUnmountSegmentWithCachelibAllocator) {
     // Create a MasterService instance for testing.
     auto service_config =
@@ -118,6 +145,11 @@ TEST_F(MasterServiceTest, MountUnmountSegmentWithCachelibAllocator) {
     UUID client_id = generate_uuid();
     const auto original_base = segment.base;
     const auto original_size = segment.size;
+
+    // Register client.
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
 
     // Test invalid parameters.
     // Invalid buffer address (0).
@@ -191,6 +223,11 @@ TEST_F(MasterServiceTest, MountUnmountSegmentWithOffsetAllocator) {
     const auto original_base = segment.base;
     const auto original_size = segment.size;
 
+    // Register client.
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     // Test invalid parameters.
     // Invalid buffer address (0).
     segment.base = 0;
@@ -251,6 +288,12 @@ TEST_F(MasterServiceTest, RandomMountUnmountSegment) {
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dis(1, 10);
+
+    // Register client.
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     while (times--) {
         int random_number = dis(gen);
         // Define the size of the segment (16MB).
@@ -281,6 +324,10 @@ TEST_F(MasterServiceTest, ConcurrentMountUnmount) {
                 MakeSegment("segment_" + std::to_string(i),
                             0x300000000 + i * 0x10000000, 16 * 1024 * 1024);
             UUID client_id = generate_uuid();
+
+            auto reg_result =
+                service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+            ASSERT_TRUE(reg_result.has_value());
 
             for (size_t j = 0; j < iterations; j++) {
                 auto mount_result = service_->MountSegment(segment, client_id);
@@ -1012,6 +1059,11 @@ TEST_F(MasterServiceTest, CleanupStaleHandlesTest) {
     auto segment = MakeSegment("test_segment", buffer, size);
     UUID client_id = generate_uuid();
 
+    // Register the client.
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     // Mount the segment
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
@@ -1078,6 +1130,9 @@ TEST_F(MasterServiceTest, ConcurrentWriteAndRemoveAll) {
     constexpr size_t size = 1024 * 1024 * 256;  // 256MB for concurrent testing
     auto segment = MakeSegment("concurrent_segment", buffer, size);
     UUID client_id = generate_uuid();
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
     auto mount_result_concurrent = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result_concurrent.has_value());
 
@@ -1157,6 +1212,9 @@ TEST_F(MasterServiceTest, ConcurrentReadAndRemoveAll) {
     constexpr size_t size = 1024 * 1024 * 256;  // 256MB for concurrent testing
     auto segment = MakeSegment("concurrent_segment", buffer, size);
     UUID client_id = generate_uuid();
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -1238,6 +1296,9 @@ TEST_F(MasterServiceTest, ConcurrentRemoveAllOperations) {
     constexpr size_t size = 1024 * 1024 * 16 * 100;
     auto segment = MakeSegment("concurrent_segment", buffer, size);
     UUID client_id = generate_uuid();
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -1297,6 +1358,9 @@ TEST_F(MasterServiceTest, UnmountSegmentImmediateCleanup) {
     auto segment1 = MakeSegment("segment1", buffer1, size);
     auto segment2 = MakeSegment("segment2", buffer2, size);
     UUID client_id = generate_uuid();
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
     auto mount_result1 = service_->MountSegment(segment1, client_id);
     ASSERT_TRUE(mount_result1.has_value());
     auto mount_result2 = service_->MountSegment(segment2, client_id);
@@ -1354,6 +1418,9 @@ TEST_F(MasterServiceTest, ReadableAfterPartialUnmountWithReplication) {
     auto segment1 = MakeSegment("segment1", buffer1, segment_size);
     auto segment2 = MakeSegment("segment2", buffer2, segment_size);
     UUID client_id = generate_uuid();
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
     auto mount_result1 = service_->MountSegment(segment1, client_id);
     ASSERT_TRUE(mount_result1.has_value());
     auto mount_result2 = service_->MountSegment(segment2, client_id);
@@ -1403,6 +1470,11 @@ TEST_F(MasterServiceTest, UnmountSegmentPerformance) {
     std::string segment_name = "perf_test_segment";
     auto segment = MakeSegment(segment_name, kBufferAddress, kSegmentSize);
     UUID client_id = generate_uuid();
+
+    // Register a client for testing.
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
 
     // Mount a segment for testing
     auto mount_result = service_->MountSegment(segment, client_id);

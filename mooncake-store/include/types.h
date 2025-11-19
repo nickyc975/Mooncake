@@ -240,4 +240,19 @@ inline std::ostream& operator<<(std::ostream& os,
     return os;
 }
 
+/**
+ * @brief Cluster configurations that need to be synced from master to clients.
+ */
+struct ClusterConfig {
+    // Version of Mooncake Store Master
+    std::string version{};
+
+    friend std::ostream& operator<<(std::ostream& os,
+                                    const ClusterConfig& config) noexcept {
+        return os << "ClusterConfig: { "
+                  << "version: " << config.version << " }";
+    }
+};
+YLT_REFL(ClusterConfig, version);
+
 }  // namespace mooncake

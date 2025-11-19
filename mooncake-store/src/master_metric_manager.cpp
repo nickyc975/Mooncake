@@ -50,6 +50,12 @@ MasterMetricManager::MasterMetricManager()
                       "Total number of active clients"),
 
       // Initialize Request Counters
+      register_client_requests_(
+          "master_register_client_requests_total",
+          "Total number of register client requests received"),
+      register_client_failures_(
+          "master_register_client_failures_total",
+          "Total number of register client requests failed"),
       put_start_requests_("master_put_start_requests_total",
                           "Total number of PutStart requests received"),
       put_start_failures_("master_put_start_failures_total",
@@ -103,12 +109,6 @@ MasterMetricManager::MasterMetricManager()
       unmount_segment_failures_(
           "master_unmount_segment_failures_total",
           "Total number of failed UnmountSegment requests"),
-      remount_segment_requests_(
-          "master_remount_segment_requests_total",
-          "Total number of RemountSegment requests received"),
-      remount_segment_failures_(
-          "master_remount_segment_failures_total",
-          "Total number of failed RemountSegment requests"),
       ping_requests_("master_ping_requests_total",
                      "Total number of ping requests received"),
       ping_failures_("master_ping_failures_total",
@@ -263,8 +263,6 @@ void MasterMetricManager::update_metrics_for_zero_output() {
     mount_segment_failures_.inc(0);
     unmount_segment_requests_.inc(0);
     unmount_segment_failures_.inc(0);
-    remount_segment_requests_.inc(0);
-    remount_segment_failures_.inc(0);
     ping_requests_.inc(0);
     ping_failures_.inc(0);
 
@@ -483,6 +481,12 @@ void MasterMetricManager::inc_total_get_nums(int64_t val) {
 }
 
 // Operation Statistics (Counters)
+void MasterMetricManager::inc_register_client_requests(int64_t val) {
+    register_client_requests_.inc(val);
+}
+void MasterMetricManager::inc_register_client_failures(int64_t val) {
+    register_client_failures_.inc(val);
+}
 void MasterMetricManager::inc_exist_key_requests(int64_t val) {
     exist_key_requests_.inc(val);
 }
@@ -548,12 +552,6 @@ void MasterMetricManager::inc_unmount_segment_requests(int64_t val) {
 }
 void MasterMetricManager::inc_unmount_segment_failures(int64_t val) {
     unmount_segment_failures_.inc(val);
-}
-void MasterMetricManager::inc_remount_segment_requests(int64_t val) {
-    remount_segment_requests_.inc(val);
-}
-void MasterMetricManager::inc_remount_segment_failures(int64_t val) {
-    remount_segment_failures_.inc(val);
 }
 void MasterMetricManager::inc_ping_requests(int64_t val) {
     ping_requests_.inc(val);
@@ -643,6 +641,14 @@ void MasterMetricManager::inc_put_start_release_cnt(int64_t count,
     put_start_discarded_staging_size_.dec(size);
 }
 
+int64_t MasterMetricManager::get_register_client_requests() {
+    return register_client_requests_.value();
+}
+
+int64_t MasterMetricManager::get_register_client_failures() {
+    return register_client_failures_.value();
+}
+
 int64_t MasterMetricManager::get_put_start_requests() {
     return put_start_requests_.value();
 }
@@ -729,14 +735,6 @@ int64_t MasterMetricManager::get_unmount_segment_requests() {
 
 int64_t MasterMetricManager::get_unmount_segment_failures() {
     return unmount_segment_failures_.value();
-}
-
-int64_t MasterMetricManager::get_remount_segment_requests() {
-    return remount_segment_requests_.value();
-}
-
-int64_t MasterMetricManager::get_remount_segment_failures() {
-    return remount_segment_failures_.value();
 }
 
 int64_t MasterMetricManager::get_ping_requests() {
@@ -916,6 +914,8 @@ std::string MasterMetricManager::serialize_metrics() {
     serialize_metric(value_size_distribution_);
 
     // Serialize Request Counters
+    serialize_metric(register_client_requests_);
+    serialize_metric(register_client_failures_);
     serialize_metric(exist_key_requests_);
     serialize_metric(exist_key_failures_);
     serialize_metric(put_start_requests_);
@@ -938,8 +938,6 @@ std::string MasterMetricManager::serialize_metrics() {
     serialize_metric(mount_segment_failures_);
     serialize_metric(unmount_segment_requests_);
     serialize_metric(unmount_segment_failures_);
-    serialize_metric(remount_segment_requests_);
-    serialize_metric(remount_segment_failures_);
     serialize_metric(ping_requests_);
     serialize_metric(ping_failures_);
 

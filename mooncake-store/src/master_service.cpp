@@ -87,27 +87,12 @@ MasterService::~MasterService() {
 auto MasterService::MountSegment(const Segment& segment, const UUID& client_id)
     -> tl::expected<void, ErrorCode> {
     ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
+    ClientAccessor client_accessor(client_shards_, client_id);
 
-    // Tell the client monitor thread to start timing for this client. To
-    // avoid the following undesired situations, this message must be sent
-    // after locking the segment mutex and before the mounting operation
-    // completes:
-    // 1. Sending the message before the lock: the client expires and
-    // unmouting invokes before this mounting are completed, which prevents
-    // this segment being able to be unmounted forever;
-    // 2. Sending the message after mounting the segment: After mounting
-    // this segment, when trying to push id to the queue, the queue is
-    // already full. However, at this point, the message must be sent,
-    // otherwise this client cannot be monitored and expired.
-    {
-        PodUUID pod_client_id;
-        pod_client_id.first = client_id.first;
-        pod_client_id.second = client_id.second;
-        if (!client_ping_queue_.push(pod_client_id)) {
-            LOG(ERROR) << "segment_name=" << segment.name
-                       << ", error=client_ping_queue_full";
-            return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
-        }
+    if (!client_accessor.Exists()) {
+        LOG(ERROR) << "Client " << client_id
+                   << " must be registered before mounting a segment";
+        return tl::make_unexpected(ErrorCode::INVALID_PARAMS);
     }
 
     auto err = segment_access.MountSegment(segment, client_id);
@@ -117,51 +102,6 @@ auto MasterService::MountSegment(const Segment& segment, const UUID& client_id)
     } else if (err != ErrorCode::OK) {
         return tl::make_unexpected(err);
     }
-    return {};
-}
-
-auto MasterService::ReMountSegment(const std::vector<Segment>& segments,
-                                   const UUID& client_id)
-    -> tl::expected<void, ErrorCode> {
-    std::unique_lock<std::shared_mutex> lock(client_mutex_);
-    if (ok_client_.contains(client_id)) {
-        LOG(WARNING) << "client_id=" << client_id
-                     << ", warn=client_already_remounted";
-        // Return OK because this is an idempotent operation
-        return {};
-    }
-
-    ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
-
-    // Tell the client monitor thread to start timing for this client. To
-    // avoid the following undesired situations, this message must be sent
-    // after locking the segment mutex or client mutex and before the remounting
-    // operation completes:
-    // 1. Sending the message before the lock: the client expires and
-    // unmouting invokes before this remounting are completed, which prevents
-    // this segment being able to be unmounted forever;
-    // 2. Sending the message after remounting the segments: After remounting
-    // these segments, when trying to push id to the queue, the queue is
-    // already full. However, at this point, the message must be sent,
-    // otherwise this client cannot be monitored and expired.
-    PodUUID pod_client_id;
-    pod_client_id.first = client_id.first;
-    pod_client_id.second = client_id.second;
-    if (!client_ping_queue_.push(pod_client_id)) {
-        LOG(ERROR) << "client_id=" << client_id
-                   << ", error=client_ping_queue_full";
-        return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
-    }
-
-    ErrorCode err = segment_access.ReMountSegment(segments, client_id);
-    if (err != ErrorCode::OK) {
-        return tl::make_unexpected(err);
-    }
-
-    // Change the client status to OK
-    ok_client_.insert(client_id);
-    MasterMetricManager::instance().inc_active_clients();
-
     return {};
 }
 
@@ -705,22 +645,51 @@ size_t MasterService::GetKeyCount() const {
     return total;
 }
 
+tl::expected<ClusterConfig, ErrorCode> MasterService::RegisterClient(
+    const UUID& client_id, const std::string& version,
+    const std::vector<Segment>& segments) {
+    const auto& master_version = GetMooncakeStoreVersion();
+    if (version != master_version) {
+        LOG(ERROR) << "Version mismatch, client=" << version
+                   << ", master=" << master_version;
+        return tl::make_unexpected(ErrorCode::INVALID_VERSION);
+    }
+
+    ScopedSegmentAccess segment_access = segment_manager_.getSegmentAccess();
+    ClientAccessor client_accessor(client_shards_, client_id);
+
+    if (client_accessor.Exists()) {
+        LOG(WARNING) << "Client " << client_id
+                     << " has been registered, ignoring duplicated registering";
+        return ClusterConfig{master_version};
+    }
+
+    ErrorCode err = segment_access.ReMountSegment(segments, client_id);
+    if (err != ErrorCode::OK) {
+        LOG(ERROR) << "Failed to remount segments from client " << client_id
+                   << ": " << err;
+        return tl::make_unexpected(err);
+    }
+
+    auto client = std::make_shared<Client>(client_id);
+    client->keepAliveIn(std::chrono::seconds(client_live_ttl_sec_));
+    client_accessor.Set(client);
+
+    LOG(INFO) << "Client " << client_id << " registered";
+
+    return ClusterConfig{master_version};
+}
+
 auto MasterService::Ping(const UUID& client_id)
     -> tl::expected<PingResponse, ErrorCode> {
-    std::shared_lock<std::shared_mutex> lock(client_mutex_);
+    ClientAccessor client_accessor(client_shards_, client_id);
     ClientStatus client_status;
-    auto it = ok_client_.find(client_id);
-    if (it != ok_client_.end()) {
+    if (client_accessor.Exists()) {
+        auto client = client_accessor.Get();
+        client->keepAliveIn(std::chrono::seconds(client_live_ttl_sec_));
         client_status = ClientStatus::OK;
     } else {
         client_status = ClientStatus::NEED_REMOUNT;
-    }
-    PodUUID pod_client_id = {client_id.first, client_id.second};
-    if (!client_ping_queue_.push(pod_client_id)) {
-        // Queue is full
-        LOG(ERROR) << "client_id=" << client_id
-                   << ", error=client_ping_queue_full";
-        return tl::make_unexpected(ErrorCode::INTERNAL_ERROR);
     }
     return PingResponse(view_version_, client_status);
 }
@@ -1100,57 +1069,34 @@ void MasterService::BatchEvict(double evict_ratio_target,
 }
 
 void MasterService::ClientMonitorFunc() {
-    std::unordered_map<UUID, std::chrono::steady_clock::time_point,
-                       boost::hash<UUID>>
-        client_ttl;
     while (client_monitor_running_) {
-        auto now = std::chrono::steady_clock::now();
+        // Record which segments are unmounted, will be used in the commit
+        // phase.
+        std::vector<UUID> unmount_segments;
+        std::vector<size_t> dec_capacities;
+        std::vector<UUID> client_ids;
+        std::vector<std::string> segment_names;
 
-        // Update the client ttl
-        PodUUID pod_client_id;
-        while (client_ping_queue_.pop(pod_client_id)) {
-            UUID client_id = {pod_client_id.first, pod_client_id.second};
-            client_ttl[client_id] =
-                now + std::chrono::seconds(client_live_ttl_sec_);
-        }
+        {
+            ScopedSegmentAccess segment_access =
+                segment_manager_.getSegmentAccess();
+            auto now = std::chrono::steady_clock::now();
+            for (size_t shard_idx = 0; shard_idx < kNumClientShards;
+                 shard_idx++) {
+                auto& shard = client_shards_[shard_idx];
+                std::lock_guard<std::mutex> guard(shard.mutex);
 
-        // Find out expired clients
-        std::vector<UUID> expired_clients;
-        for (auto it = client_ttl.begin(); it != client_ttl.end();) {
-            if (it->second < now) {
-                LOG(INFO) << "client_id=" << it->first
-                          << ", action=client_expired";
-                expired_clients.push_back(it->first);
-                it = client_ttl.erase(it);
-            } else {
-                ++it;
-            }
-        }
-
-        // Update the client status to NEED_REMOUNT
-        if (!expired_clients.empty()) {
-            // Record which segments are unmounted, will be used in the commit
-            // phase.
-            std::vector<UUID> unmount_segments;
-            std::vector<size_t> dec_capacities;
-            std::vector<UUID> client_ids;
-            std::vector<std::string> segment_names;
-            {
-                // Lock client_mutex and segment_mutex
-                std::unique_lock<std::shared_mutex> lock(client_mutex_);
-                for (auto& client_id : expired_clients) {
-                    auto it = ok_client_.find(client_id);
-                    if (it != ok_client_.end()) {
-                        ok_client_.erase(it);
-                        MasterMetricManager::instance().dec_active_clients();
+                auto it = shard.clients.begin();
+                while (it != shard.clients.end()) {
+                    if (it->second->isAliveUtil(now)) {
+                        it++;
+                        continue;
                     }
-                }
 
-                ScopedSegmentAccess segment_access =
-                    segment_manager_.getSegmentAccess();
-                for (auto& client_id : expired_clients) {
+                    LOG(WARNING) << "Client " << it->second->id << " expired";
+
                     std::vector<Segment> segments;
-                    segment_access.GetClientSegments(client_id, segments);
+                    segment_access.GetClientSegments(it->second->id, segments);
                     for (auto& seg : segments) {
                         size_t metrics_dec_capacity = 0;
                         if (segment_access.PrepareUnmountSegment(
@@ -1158,32 +1104,34 @@ void MasterService::ClientMonitorFunc() {
                             ErrorCode::OK) {
                             unmount_segments.push_back(seg.id);
                             dec_capacities.push_back(metrics_dec_capacity);
-                            client_ids.push_back(client_id);
+                            client_ids.push_back(it->second->id);
                             segment_names.push_back(seg.name);
                         } else {
-                            LOG(ERROR) << "client_id=" << client_id
+                            LOG(ERROR) << "client_id=" << it->second->id
                                        << ", segment_name=" << seg.name
                                        << ", "
                                           "error=prepare_unmount_expired_"
                                           "segment_failed";
                         }
                     }
-                }
-            }  // Release the mutex before long-running ClearInvalidHandles and
-               // avoid deadlocks
 
-            if (!unmount_segments.empty()) {
-                ClearInvalidHandles();
-
-                ScopedSegmentAccess segment_access =
-                    segment_manager_.getSegmentAccess();
-                for (size_t i = 0; i < unmount_segments.size(); i++) {
-                    segment_access.CommitUnmountSegment(
-                        unmount_segments[i], client_ids[i], dec_capacities[i]);
-                    LOG(INFO) << "client_id=" << client_ids[i]
-                              << ", segment_name=" << segment_names[i]
-                              << ", action=unmount_expired_segment";
+                    it = shard.clients.erase(it);
                 }
+            }
+        }  // Release the mutex before long-running ClearInvalidHandles and
+           // avoid deadlocks
+
+        if (!unmount_segments.empty()) {
+            ClearInvalidHandles();
+
+            ScopedSegmentAccess segment_access =
+                segment_manager_.getSegmentAccess();
+            for (size_t i = 0; i < unmount_segments.size(); i++) {
+                segment_access.CommitUnmountSegment(
+                    unmount_segments[i], client_ids[i], dec_capacities[i]);
+                LOG(INFO) << "client_id=" << client_ids[i]
+                          << ", segment_name=" << segment_names[i]
+                          << ", action=unmount_expired_segment";
             }
         }
 

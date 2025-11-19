@@ -372,6 +372,9 @@ class Client {
     std::thread ping_thread_;
     std::atomic<bool> ping_running_{false};
     void PingThreadMain(bool is_ha_mode, std::string current_master_address);
+
+    // Cluster configuration from master
+    ClusterConfig cluster_config_;
 };
 
 }  // namespace mooncake

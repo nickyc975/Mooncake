@@ -191,11 +191,13 @@ ErrorCode Client::ConnectToMaster(const std::string& master_server_entry) {
             return err;
         }
 
-        err = master_client_.Connect(master_address);
-        if (err != ErrorCode::OK) {
+        auto reg_result = master_client_.Register(master_address);
+        if (!reg_result.has_value()) {
             LOG(ERROR) << "Failed to connect to master";
-            return err;
+            return reg_result.error();
         }
+
+        cluster_config_ = reg_result.value();
 
         // Start ping thread to monitor master health and trigger remount if
         // needed.
@@ -209,10 +211,14 @@ ErrorCode Client::ConnectToMaster(const std::string& master_server_entry) {
 
         return ErrorCode::OK;
     } else {
-        auto err = master_client_.Connect(master_server_entry);
-        if (err != ErrorCode::OK) {
-            return err;
+        auto reg_result = master_client_.Register(master_server_entry);
+        if (!reg_result.has_value()) {
+            LOG(ERROR) << "Failed to connect to master";
+            return reg_result.error();
         }
+
+        cluster_config_ = reg_result.value();
+
         // Non-HA mode also enables heartbeat/ping
         ping_running_ = true;
         bool is_ha_mode = false;
@@ -1681,46 +1687,39 @@ void Client::PingThreadMain(bool is_ha_mode,
     // Increment after a ping failure, reset after a ping success
     int ping_fail_count = 0;
 
-    auto remount_segment = [this]() {
-        // This lock must be held until the remount rpc is finished,
-        // otherwise there will be corner cases, e.g., a segment is
-        // unmounted successfully first, and then remounted again in
-        // this thread.
+    // Reconnect to master and remount segments.
+    auto reconnect_to = [this](const std::string& master_addr) -> ErrorCode {
         std::lock_guard<std::mutex> lock(mounted_segments_mutex_);
+
         std::vector<Segment> segments;
-        for (auto it : mounted_segments_) {
-            auto& segment = it.second;
-            segments.emplace_back(segment);
+        for (auto& it : mounted_segments_) {
+            segments.emplace_back(it.second);
         }
-        auto remount_result = master_client_.ReMountSegment(segments);
-        if (!remount_result) {
-            ErrorCode err = remount_result.error();
-            LOG(ERROR) << "Failed to remount segments: " << err;
+
+        auto reg_result = master_client_.Register(master_addr, segments);
+        if (!reg_result.has_value()) {
+            LOG(ERROR) << "Failed to register client to " << master_addr << ": "
+                       << toString(reg_result.error());
+            return reg_result.error();
         }
+
+        return ErrorCode::OK;
     };
-    // Use another thread to remount segments to avoid blocking the ping
-    // thread
-    std::future<void> remount_segment_future;
 
     while (ping_running_) {
-        // Join the remount segment thread if it is ready
-        if (remount_segment_future.valid() &&
-            remount_segment_future.wait_for(std::chrono::seconds(0)) ==
-                std::future_status::ready) {
-            remount_segment_future = std::future<void>();
-        }
-
         // Ping master
         auto ping_result = master_client_.Ping();
         if (ping_result) {
             // Reset ping failure count
             ping_fail_count = 0;
             auto& ping_response = ping_result.value();
-            if (ping_response.client_status == ClientStatus::NEED_REMOUNT &&
-                !remount_segment_future.valid()) {
-                // Ensure at most one remount segment thread is running
-                remount_segment_future =
-                    std::async(std::launch::async, remount_segment);
+            if (ping_response.client_status == ClientStatus::NEED_REMOUNT) {
+                auto err = reconnect_to(current_master_address);
+                if (err != ErrorCode::OK) {
+                    LOG(ERROR)
+                        << "Failed to reconnect to " << current_master_address
+                        << ": " << toString(err);
+                }
             }
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(success_ping_interval_ms));
@@ -1752,37 +1751,30 @@ void Client::PingThreadMain(bool is_ha_mode,
                 continue;
             }
 
-            err = master_client_.Connect(master_address);
-            if (err != ErrorCode::OK) {
-                LOG(ERROR) << "Failed to connect to master " << master_address
-                           << ": " << toString(err);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(fail_ping_interval_ms));
-                continue;
+            // Update master address.
+            if (master_address != current_master_address) {
+                LOG(INFO) << "Master address updated to: " << master_address
+                          << ", version: " << next_version;
+                current_master_address = master_address;
             }
-
-            current_master_address = master_address;
-            LOG(INFO) << "Reconnected to master " << master_address;
-            ping_fail_count = 0;
         } else {
             LOG(ERROR) << "Failed to ping master for " << ping_fail_count
                        << " times (non-HA); reconnecting to "
                        << current_master_address;
-            auto err = master_client_.Connect(current_master_address);
-            if (err != ErrorCode::OK) {
-                LOG(ERROR) << "Reconnect failed to " << current_master_address
-                           << ": " << toString(err);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(fail_ping_interval_ms));
-                continue;
-            }
-            LOG(INFO) << "Reconnected to master " << current_master_address;
-            ping_fail_count = 0;
         }
-    }
-    // Explicitly wait for the remount segment thread to finish
-    if (remount_segment_future.valid()) {
-        remount_segment_future.wait();
+
+        // Try to reconnect to the master.
+        auto err = reconnect_to(current_master_address);
+        if (err != ErrorCode::OK) {
+            LOG(ERROR) << "Failed to connect to " << current_master_address
+                       << ": " << toString(err);
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(fail_ping_interval_ms));
+            continue;
+        }
+
+        LOG(INFO) << "Reconnected to master " << current_master_address;
+        ping_fail_count = 0;
     }
 }
 

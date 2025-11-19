@@ -36,10 +36,15 @@ TEST_F(MasterMetricsTest, InitialStatusTest) {
     ASSERT_EQ(metrics.get_total_file_capacity(), 0);
     ASSERT_DOUBLE_EQ(metrics.get_global_file_used_ratio(), 0.0);
 
+    // Cluster Metrics
+    ASSERT_EQ(metrics.get_active_clients(), 0);
+
     // Key/Value Metrics
     ASSERT_EQ(metrics.get_key_count(), 0);
 
     // Operation Statistics
+    ASSERT_EQ(metrics.get_register_client_requests(), 0);
+    ASSERT_EQ(metrics.get_register_client_failures(), 0);
     ASSERT_EQ(metrics.get_put_start_requests(), 0);
     ASSERT_EQ(metrics.get_put_start_failures(), 0);
     ASSERT_EQ(metrics.get_put_end_requests(), 0);
@@ -122,6 +127,14 @@ TEST_F(MasterMetricsTest, BasicRequestTest) {
     uint64_t value_length = 1024;
     ReplicateConfig config;
     config.replica_num = 1;
+
+    // Test RegisterClient request
+    auto reg_result =
+        service_.RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+    ASSERT_EQ(metrics.get_active_clients(), 1);
+    ASSERT_EQ(metrics.get_register_client_requests(), 1);
+    ASSERT_EQ(metrics.get_register_client_failures(), 0);
 
     // Test MountSegment request
     auto mount_result = service_.MountSegment(segment, client_id);
@@ -271,6 +284,11 @@ TEST_F(MasterMetricsTest, CalcCacheStatsTest) {
               0.5);
     ASSERT_EQ(stats_dict[MasterMetricManager::CacheHitStat::VALID_GET_RATE], 1);
 
+    // Register client
+    auto reg_result =
+        service_.RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_.MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
     auto put_start_result1 =
@@ -323,6 +341,11 @@ TEST_F(MasterMetricsTest, BatchRequestTest) {
     std::vector<uint64_t> value_lengths = {1024, 2048, 512};
     ReplicateConfig config;
     config.replica_num = 1;
+
+    // Register client
+    auto reg_result =
+        service_.RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
 
     // Mount segment
     auto mount_result = service_.MountSegment(segment, client_id);

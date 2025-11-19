@@ -535,19 +535,6 @@ tl::expected<void, ErrorCode> WrappedMasterService::MountSegment(
         [] { MasterMetricManager::instance().inc_mount_segment_failures(); });
 }
 
-tl::expected<void, ErrorCode> WrappedMasterService::ReMountSegment(
-    const std::vector<Segment>& segments, const UUID& client_id) {
-    return execute_rpc(
-        "ReMountSegment",
-        [&] { return master_service_.ReMountSegment(segments, client_id); },
-        [&](auto& timer) {
-            timer.LogRequest("segments_count=", segments.size(),
-                             ", client_id=", client_id);
-        },
-        [] { MasterMetricManager::instance().inc_remount_segment_requests(); },
-        [] { MasterMetricManager::instance().inc_remount_segment_failures(); });
-}
-
 tl::expected<void, ErrorCode> WrappedMasterService::UnmountSegment(
     const UUID& segment_id, const UUID& client_id) {
     return execute_rpc(
@@ -582,6 +569,22 @@ WrappedMasterService::GetStorageConfig() {
     return result;
 }
 
+tl::expected<ClusterConfig, ErrorCode> WrappedMasterService::RegisterClient(
+    const UUID& client_id, const std::string& version,
+    const std::vector<Segment>& segments) {
+    return execute_rpc(
+        "RegisterClient",
+        [&] {
+            return master_service_.RegisterClient(client_id, version, segments);
+        },
+        [&](auto& timer) {
+            timer.LogRequest("client_id=", client_id,
+                             ", segment_num=", segments.size());
+        },
+        [] { MasterMetricManager::instance().inc_register_client_requests(); },
+        [] { MasterMetricManager::instance().inc_register_client_failures(); });
+}
+
 tl::expected<PingResponse, ErrorCode> WrappedMasterService::Ping(
     const UUID& client_id) {
     ScopedVLogTimer timer(1, "Ping");
@@ -593,10 +596,6 @@ tl::expected<PingResponse, ErrorCode> WrappedMasterService::Ping(
 
     timer.LogResponseExpected(result);
     return result;
-}
-
-tl::expected<std::string, ErrorCode> WrappedMasterService::ServiceReady() {
-    return GetMooncakeStoreVersion();
 }
 
 void RegisterRpcService(
@@ -632,9 +631,9 @@ void RegisterRpcService(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::MountSegment>(
         &wrapped_master_service);
-    server.register_handler<&mooncake::WrappedMasterService::ReMountSegment>(
-        &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::UnmountSegment>(
+        &wrapped_master_service);
+    server.register_handler<&mooncake::WrappedMasterService::RegisterClient>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::Ping>(
         &wrapped_master_service);
@@ -643,8 +642,6 @@ void RegisterRpcService(
     server.register_handler<&mooncake::WrappedMasterService::GetStorageConfig>(
         &wrapped_master_service);
     server.register_handler<&mooncake::WrappedMasterService::BatchExistKey>(
-        &wrapped_master_service);
-    server.register_handler<&mooncake::WrappedMasterService::ServiceReady>(
         &wrapped_master_service);
 }
 

@@ -87,6 +87,8 @@ class MasterMetricManager {
     int64_t get_active_clients();
 
     // Operation Statistics (Counters)
+    void inc_register_client_requests(int64_t val = 1);
+    void inc_register_client_failures(int64_t val = 1);
     void inc_put_start_requests(int64_t val = 1);
     void inc_put_start_failures(int64_t val = 1);
     void inc_put_end_requests(int64_t val = 1);
@@ -109,8 +111,6 @@ class MasterMetricManager {
     void inc_mount_segment_failures(int64_t val = 1);
     void inc_unmount_segment_requests(int64_t val = 1);
     void inc_unmount_segment_failures(int64_t val = 1);
-    void inc_remount_segment_requests(int64_t val = 1);
-    void inc_remount_segment_failures(int64_t val = 1);
     void inc_ping_requests(int64_t val = 1);
     void inc_ping_failures(int64_t val = 1);
 
@@ -132,6 +132,8 @@ class MasterMetricManager {
     void inc_batch_put_revoke_partial_success(int64_t failed_items);
 
     // Operation Statistics Getters
+    int64_t get_register_client_requests();
+    int64_t get_register_client_failures();
     int64_t get_put_start_requests();
     int64_t get_put_start_failures();
     int64_t get_put_end_requests();
@@ -154,8 +156,6 @@ class MasterMetricManager {
     int64_t get_mount_segment_failures();
     int64_t get_unmount_segment_requests();
     int64_t get_unmount_segment_failures();
-    int64_t get_remount_segment_requests();
-    int64_t get_remount_segment_failures();
     int64_t get_ping_requests();
     int64_t get_ping_failures();
 
@@ -253,6 +253,8 @@ class MasterMetricManager {
     ylt::metric::gauge_t active_clients_;
 
     // Operation Statistics
+    ylt::metric::counter_t register_client_requests_;
+    ylt::metric::counter_t register_client_failures_;
     ylt::metric::counter_t put_start_requests_;
     ylt::metric::counter_t put_start_failures_;
     ylt::metric::counter_t put_end_requests_;
@@ -275,8 +277,6 @@ class MasterMetricManager {
     ylt::metric::counter_t mount_segment_failures_;
     ylt::metric::counter_t unmount_segment_requests_;
     ylt::metric::counter_t unmount_segment_failures_;
-    ylt::metric::counter_t remount_segment_requests_;
-    ylt::metric::counter_t remount_segment_failures_;
     ylt::metric::counter_t ping_requests_;
     ylt::metric::counter_t ping_failures_;
 

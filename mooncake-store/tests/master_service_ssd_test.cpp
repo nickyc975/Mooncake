@@ -41,6 +41,10 @@ TEST_F(MasterServiceSSDTest, PutEndBothReplica) {
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
 
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -96,6 +100,10 @@ TEST_F(MasterServiceSSDTest, PutRevokeDiskReplica) {
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
 
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -137,6 +145,10 @@ TEST_F(MasterServiceSSDTest, PutRevokeMemoryReplica) {
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
 
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -176,6 +188,10 @@ TEST_F(MasterServiceSSDTest, PutRevokeBothReplica) {
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
 
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -213,6 +229,10 @@ TEST_F(MasterServiceSSDTest, RemoveKey) {
     segment.size = size;
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
+
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
 
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
@@ -253,6 +273,11 @@ TEST_F(MasterServiceSSDTest, EvictObject) {
     segment.size = size;
     segment.te_endpoint = segment.name;
     UUID client_id = generate_uuid();
+
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
@@ -320,6 +345,12 @@ TEST_F(MasterServiceSSDTest, PutStartExpires) {
     segment.size = kSegmentSize;
     segment.te_endpoint = segment.name;
     auto client_id = generate_uuid();
+
+    // Register client
+    auto reg_result =
+        service_->RegisterClient(client_id, GetMooncakeStoreVersion());
+    ASSERT_TRUE(reg_result.has_value());
+
     auto mount_result = service_->MountSegment(segment, client_id);
     ASSERT_TRUE(mount_result.has_value());
 
